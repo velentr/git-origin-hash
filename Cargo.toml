@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: 2023 Brian Kubisiak <brian@kubisiak.com>
+#
+# SPDX-License-Identifier: GPL-3.0-only
+
+[package]
+name = "git-origin-hash"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+clap = { default-features = false, features = ["derive", "std", "suggestions"], version = "3" }
+data-encoding = "2"
+git2 = "0.18"
+sha2 = "0.10"
