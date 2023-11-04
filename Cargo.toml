@@ -10,5 +10,5 @@ edition = "2021"
 [dependencies]
 clap = { default-features = false, features = ["derive", "std", "suggestions"], version = "3" }
 data-encoding = "2"
-git2 = "0.18"
+gix = "0.55"
 sha2 = "0.10"

@@ -11,7 +11,7 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 fn nar_blob<W: Write>(
     output: &mut W,
-    blob: &git2::Blob,
+    blob: &gix::Blob,
     executable: bool,
 ) -> Result<()> {
     nar_bytes(output, b"(")?;
@@ -24,39 +24,39 @@ fn nar_blob<W: Write>(
     }
 
     nar_bytes(output, b"contents")?;
-    nar_int(output, blob.size() as u64)?;
-    output.write_all(blob.content())?;
+    nar_int(output, blob.data.len() as u64)?;
+    output.write_all(&blob.data)?;
 
-    if (blob.size() % 8) != 0 {
-        nar_padding(output, blob.size())?;
+    if (blob.data.len() % 8) != 0 {
+        nar_padding(output, blob.data.len())?;
     }
 
     nar_bytes(output, b")")?;
     Ok(())
 }
 
-fn nar_symlink<W: Write>(output: &mut W, blob: &git2::Blob) -> Result<()> {
+fn nar_symlink<W: Write>(output: &mut W, blob: &gix::Blob) -> Result<()> {
     nar_bytes(output, b"(")?;
     nar_bytes(output, b"type")?;
     nar_bytes(output, b"symlink")?;
     nar_bytes(output, b"target")?;
-    nar_int(output, blob.size() as u64)?;
-    output.write_all(blob.content())?;
+    nar_int(output, blob.data.len() as u64)?;
+    output.write_all(&blob.data)?;
 
-    if (blob.size() % 8) != 0 {
-        nar_padding(output, blob.size())?;
+    if (blob.data.len() % 8) != 0 {
+        nar_padding(output, blob.data.len())?;
     }
 
     nar_bytes(output, b")")?;
     Ok(())
 }
 
-fn is_executable(mode: i32) -> bool {
-    (mode & 0o100) != 0
+fn is_executable(mode: gix::object::tree::EntryMode) -> bool {
+    mode == gix::object::tree::EntryMode::BlobExecutable
 }
 
-fn is_symlink(mode: i32) -> bool {
-    (mode & 0o20000) != 0
+fn is_symlink(mode: gix::object::tree::EntryMode) -> bool {
+    mode == gix::object::tree::EntryMode::Link
 }
 
 fn nar_int<W: Write>(output: &mut W, i: u64) -> Result<()> {
@@ -80,15 +80,18 @@ fn nar_bytes<W: Write>(output: &mut W, data: &[u8]) -> Result<()> {
 }
 
 fn nar_tree<W: Write>(
-    repo: &git2::Repository,
+    repo: &gix::Repository,
     output: &mut W,
-    tree: &git2::Tree,
+    tree: &gix::Tree,
 ) -> Result<()> {
-    let mut entries: Vec<git2::TreeEntry> = tree.iter().collect();
+    let mut entries = Vec::new();
+    for entry in tree.iter() {
+        entries.push(entry?);
+    }
     // Really annoying copy here due to the limitations on type
     // inference for lifetimes in closures. This should be fixable,
     // but I'm not wasting time on it for now.
-    entries.sort_by_key(|entry| entry.name_bytes().to_vec());
+    entries.sort_by_key(|entry| entry.filename().to_vec());
 
     nar_bytes(output, b"(")?;
     nar_bytes(output, b"type")?;
@@ -98,28 +101,20 @@ fn nar_tree<W: Write>(
         nar_bytes(output, b"entry")?;
         nar_bytes(output, b"(")?;
         nar_bytes(output, b"name")?;
-        nar_bytes(output, entry.name_bytes())?;
+        nar_bytes(output, entry.filename())?;
         nar_bytes(output, b"node")?;
-        match entry.kind().unwrap() {
-            git2::ObjectType::Tree => {
-                nar_tree(
-                    repo,
-                    output,
-                    &entry.to_object(repo)?.peel_to_tree()?,
-                )?;
+        let object = entry.object()?;
+        match object.kind {
+            gix::object::Kind::Tree => {
+                nar_tree(repo, output, &object.peel_to_tree()?)?;
             }
-            git2::ObjectType::Blob => {
-                if !is_symlink(entry.filemode()) {
-                    nar_blob(
-                        output,
-                        &entry.to_object(repo)?.peel_to_blob()?,
-                        is_executable(entry.filemode()),
-                    )?;
+            gix::object::Kind::Blob => {
+                let blob =
+                    object.peel_to_kind(gix::object::Kind::Blob)?.into_blob();
+                if !is_symlink(entry.mode()) {
+                    nar_blob(output, &blob, is_executable(entry.mode()))?;
                 } else {
-                    nar_symlink(
-                        output,
-                        &entry.to_object(repo)?.peel_to_blob()?,
-                    )?;
+                    nar_symlink(output, &blob)?;
                 }
             }
             _ => panic!("encountered unhashable object"),
@@ -133,9 +128,9 @@ fn nar_tree<W: Write>(
 }
 
 fn nar_commit<W: Write>(reference: &str, output: &mut W) -> Result<()> {
-    let repo = git2::Repository::open(".")?;
-    let reference = repo.resolve_reference_from_short_name(reference)?;
-    let tree = reference.peel_to_tree()?;
+    let repo = gix::open(".")?;
+    let reference = repo.find_reference(reference)?;
+    let tree = reference.into_fully_peeled_id()?.object()?.peel_to_tree()?;
     nar_bytes(output, b"nix-archive-1")?;
     nar_tree(&repo, output, &tree)?;
     Ok(())
